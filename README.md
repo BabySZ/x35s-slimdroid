@@ -2,7 +2,7 @@
 
 **POWKIDDY X35s (RKX35K / rk3566_rm700k) 精简版 Android 11**
 
-为墨水屏掌机定制的 AOSP 11 构建。目标：**极致省电 + 极快启动 + 只保留游戏所需能力**。
+为 LCD 掌机定制的 AOSP 11 构建。目标：**极致省电 + 极快启动 + 只保留游戏所需能力**。
 
 > 实测成绩：**休眠一周，电量仍剩 20% 以上**；自检结束后 **5 秒内**出现启动动画。
 
@@ -24,18 +24,18 @@
 
 ## 这是什么
 
-RKX35K 是一台 640×480 电子墨水屏掌机，主控 RK3566，运行 AOSP 11。
+RKX35K 是一台 640×480 LCD 掌机（MIPI DSI 4-lane 面板），主控 RK3566，运行 AOSP 11。
 原厂系统面向通用平板设计，带着大量本机用不到的组件：WiFi 守护进程、蜂窝电话栈、
 GPS、摄像头 HAL、32 位 zygote、debug 版 ART、二十几个 RK 预装 APK……
 
-本项目把这些**逐一识别、证实无依赖后移除**，并为墨水屏 + 手柄场景补上专属支持。
+本项目把这些**逐一识别、证实无依赖后移除**，并为手柄场景补上专属支持。
 
 ### 硬件要点
 
 | 项目 | 值 |
 |---|---|
 | 主控 | RK3566 (`rk3566_rm700k`) |
-| 屏幕 | 640×480 电子墨水屏 |
+| 屏幕 | 640×480 LCD，MIPI DSI 4-lane（`simple-panel-dsi`） |
 | RAM | ~974 MB |
 | 无线 | **无 WiFi / 无蓝牙模组 / 无 GNSS / 无蜂窝** |
 | 输入 | 内置手柄 `zed_joystick`（ABCD + 投币 + 开始 + 十字键）+ 专用退出键 |
@@ -47,7 +47,7 @@ GPS、摄像头 HAL、32 位 zygote、debug 版 ART、二十几个 RK 预装 APK
 
 ### 为什么精简
 
-这台设备的核心矛盾是：**墨水屏 + 无线电全缺的硬件，跑着按"联网平板"假设搭起来的系统**。
+这台设备的核心矛盾是：**无线电全缺的硬件，跑着按"联网平板"假设搭起来的系统**。
 每一条用不到的常驻服务都在消耗三样东西：内存、启动时间、电量。
 
 精简不是随手删，而是**先证明"确实没依赖"，再动手**。每条删除都附证据链，见 [已知取舍](#已知取舍)。
@@ -58,7 +58,7 @@ GPS、摄像头 HAL、32 位 zygote、debug 版 ART、二十几个 RK 预装 APK
 
 内核把 d-pad 上报为 `BTN_DPAD_*`(544-547)，而 AOSP 自带的 `Generic.kl` 没有这几条，
 导致 Android 侧根本收不到 `AKEYCODE_DPAD_*`。
-补上 4 条映射后十字键才可用（`device/rockchip/rm35k/eink_logo` 同级，见
+补上 4 条映射后十字键才可用（见
 `build-patches/aosp/frameworks/base/data/keyboards/Generic.kl:447-453`）。
 
 **2. 天马(Pegasus) 启动 RetroArch 丢失配置**
@@ -219,8 +219,8 @@ fastboot reboot
 
 ## Logo 自定义方法
 
-本机是**墨水屏**，四段启动流程各有独立图像，全部集中在
-`device/rockchip/rm35k/eink_logo/`：
+四段启动流程各有独立图像，全部集中在 `device/rockchip/rm35k/eink_logo/`
+（**目录名是原厂沿用的历史命名**，本机实为普通 LCD，该目录内容与墨水屏无关）：
 
 ```
 eink_logo/
@@ -248,10 +248,12 @@ eink_logo/
 
 ### 1. U-Boot / 内核 / 充电 Logo（BMP）
 
-打包逻辑在 `device/rockchip/common/mkimage.sh:254-264`：
+打包逻辑在 `device/rockchip/common/mkimage.sh:254-264`。**注意：该分支被
+`BUILD_WITH_RK_EBOOK` 门控，而全树只有 pinenote（真正的墨水屏设备）设了这个变量，
+本机未设，所以这段逻辑在本机**不会执行**，也不需要 `logo.img`：**
 
 ```bash
-IS_EBOOK=$(get_build_var BUILD_WITH_RK_EBOOK)
+IS_EBOOK=$(get_build_var BUILD_WITH_RK_EBOOK)   # 本机非 true
 ebook_logo_tool=rkbin/tools/bmp2gray16
 $ebook_logo_tool \
     --uboot-logo   $EINK_LOGO_PATH/uboot_logo/uboot.bmp \
@@ -260,16 +262,23 @@ $ebook_logo_tool \
     --output       $IMAGE_PATH/logo.img
 ```
 
+**本机实际的 U-Boot/内核 Logo 路径：**
+
+- U-Boot Logo 与充电动画：由 U-Boot 从 `resource.img` 内的 DTB 节点读取
+  （`uboot.bmp`/`kernel.bmp`/`battery_*.bmp` 经 `resource.img` 打包，见
+  `device/rockchip/rm35k/resource.img` 与 `mkimage.sh:95-97`）
+- 修改方法：替换 `eink_logo/` 下对应 `.bmp` → 重新构建 → 得到新的 `resource.img` →
+  `fastboot flash resource resource.img`（小分区，刷新快）
+
 **步骤：**
 
-1. 准备 **640×480 BMP**，**8-bit 灰度**（墨水屏为 16 级灰，多余色阶会被量化）
+1. 准备 **640×480 BMP**（32 位 BGRA 或 24 位均可；若走 `bmp2gray16` 才需 8-bit 灰度）
 2. 直接覆盖对应 `.bmp` 文件（保持文件名不变）
-3. 重新构建 → `mkimage.sh` 会重新生成 `logo.img`
+3. 重新构建 → 生成新 `resource.img` → 刷 resource 分区
 
 **注意：**
 - 分辨率必须 **640×480**，否则显示偏移
-- 灰度图最佳，彩色图会被转灰
-- 充电帧建议保持 8K 大小（单帧简洁图），动画帧间差异小才不闪
+- LCD 支持 24/32 位色彩，无需刻意灰度化
 
 ### 2. Android 开机动画（bootanimation）
 
@@ -297,15 +306,15 @@ p 1 0 part0        # part0 播放1次, 无暂停
 p 0 0 part1        # part1 循环播放直到开机完成
 ```
 
-**墨水屏专属提示：**
-- 帧率别超过 **2-5 fps**，墨水屏刷新慢，帧多只会拖长开机
-- PNG 用**灰度**格式，体积小且无需色彩量化
-- 高分辨率帧会显著拖慢 5 秒启动目标，建议单帧 < 50 KB
+**LCD 提示：**
+- 帧率可达 **30 fps**（普通 LCD 无墨水屏刷新延迟），但帧数越多开机越长
+- 若追求 5 秒启动目标，建议总帧数控制在 10-20 帧、单帧 < 100 KB
+- 支持彩色，无需灰度化
 - 播放 1 次的段（`p 1 0`）适合做静态封面
 
 ### 3. 待机 / 关机 / 低电图（PNG）
 
-直接替换 `standby_logo/`、`poweroff_logo/` 下的 PNG，**640×480 灰度 PNG**。
+直接替换 `standby_logo/`、`poweroff_logo/` 下的 PNG，**640×480 PNG**。
 这些由系统服务在对应状态读取，改完需重新构建并刷 super。
 
 ---

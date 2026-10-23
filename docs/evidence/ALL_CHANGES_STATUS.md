@@ -1,7 +1,7 @@
 # RMX35K 全部代码变动与当前状态汇总
 
 > 生成时间：2026-10-01
-> 设备：RMX35K (`rk3566_rm700k`, `aosp_rm35k-userdebug`)，AOSP 11，内核 4.19.219，640x480 墨水屏，adb 序列号 `7b264ab2a454303`
+> 设备：RMX35K (`rk3566_rm700k`, `aosp_rm35k-userdebug`)，AOSP 11，内核 4.19.219，640x480 LCD (MIPI DSI)，adb 序列号 `7b264ab2a454303`
 > 当前已刷入版本：**r32**（`super_r32.img`，md5 `feb0c5f17f1bf3868ed46992d10dcc4b`）
 > 本文所有结论均为**本轮实测复核**，非凭记忆。构建树 `/data/aosp` 不是 git 仓库，故逐文件用 md5 比对。
 

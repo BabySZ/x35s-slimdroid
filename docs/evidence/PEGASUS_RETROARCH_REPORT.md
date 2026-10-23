@@ -1,7 +1,7 @@
 # TF 卡 / Pegasus / RetroArch 完整交付报告
 
 日期: 2026-09-30
-设备: RMX35K (`rk3566_rm700k`, AOSP 11, kernel 4.19.219, 640x480 墨水屏)
+设备: RMX35K (`rk3566_rm700k`, AOSP 11, kernel 4.19.219, 640x480 LCD (MIPI DSI))
 目标: 1) 恢复镜像  2) 装天马(Pegasus) + 恢复刮削  3) 按 TF 卡内容装模拟器(FC/街机优先)
 
 ---
