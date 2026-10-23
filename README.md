@@ -13,6 +13,10 @@
 - [这是什么](#这是什么)
 - [处理的缘由](#处理的缘由)
 - [实测优化成果](#实测优化成果)
+- [为什么这么做（对比 AURKNIX）](#为什么这么做对比-aurknix)
+- [退出游戏：同时按 VOL+ / VOL-](#退出游戏同时按-vol--vol-)
+- [存储布局：App 装哪里](#存储布局app-装哪里)
+- [备份原机固件与救砖](#备份原机固件与救砖)
 - [仓库内容](#仓库内容)
 - [刷机方法](#刷机方法)
 - [Logo 自定义方法](#logo-自定义方法)
@@ -87,6 +91,285 @@ GPS、摄像头 HAL、32 位 zygote、debug 版 ART、二十几个 RK 预装 APK
 | 自检结束 → 启动动画出现 | **< 5 秒** |
 | 移除的常驻进程 | wificond 等 |
 | zygote | 单架构 `zygote64`（省去 32 位预载，实测省 ~75 MB 常驻内存 + 消除 465ms 启动锁争用） |
+
+---
+
+## 为什么这么做（对比 AURKNIX）
+
+AURKNIX 是本机常用的另一套方案——把整套系统装在 **TF 卡**上，从 TF 启动 Linux/游戏系统。
+本固件则把 Android 放进 **eMMC**，只在 TF 卡上放游戏 ROM。
+
+**核心差别：系统跑在哪种存储介质上。**
+
+| | 本固件（eMMC 启动） | AURKNIX（TF 卡启动） |
+|---|---|---|
+| 系统所在介质 | 板载 eMMC（eMMC 5.x，HS200 接口） | TF 卡（UHS-I） |
+| 顺序读 | eMMC 5.x 规范理论上限 200 MB/s，实际通常 100–250 MB/s | UHS-I 上限 104 MB/s，普通卡实际 20–90 MB/s |
+| 4K 随机读（影响 App 冷启动、dex 加载、sqlite） | 通常 10–40 MB/s | 通常 1–5 MB/s（无 A1/A2 标的卡更低） |
+| 系统完整性 | 只读 super，掉电不易损坏 | 卡上系统可写，拔卡/掉电易伤 |
+| 拔卡影响 | 拔了 TF 只是 ROM 没了，系统照常 | 拔了卡系统直接没了 |
+
+说明：上表为**规范/典型值**，未在本机做过逐卡实测（设备侧无基准工具），
+具体数值随卡的品牌与等级浮动。但量级差距是确定性的：**4K 随机读写是 App 体验最敏感的
+指标，eMMC 在这一项上比普通 TF 卡高出一个数量级**。这也是 Android 系统必须放 eMMC
+的原因——Framework、ART、dexopt、应用数据库全是海量小文件随机 IO，放 TF 上会明显卡顿。
+
+**所以分工是：系统 + App 在 eMMC，ROM 在 TF 卡。** ROM 是大文件顺序读，TF 完全够用，
+而且可热插拔换游戏库；eMMC 的小文件随机 IO 性能留给系统真正需要它的地方。
+
+---
+
+## 退出游戏：同时按 VOL+ / VOL-
+
+本机手柄**没有** Back / Home / Menu 键，退出模拟器游戏原本只能靠系统 UI，体验很差。
+VOL+ 和 VOL- 是本机唯一一组空闲可组合的按键，于是做成组合键：
+
+> **同时按住 VOL+ 和 VOL- → 触发一次「返回/退出」**（注入 `KEYCODE_ESCAPE`）
+
+实现在 `device/rockchip/rm35k/zedkeys/zedkeys.c`（220 行 C，无外部依赖）：
+
+**设计要点**
+
+| 要点 | 说明 |
+|---|---|
+| 被动监听 | 监听 `/dev/input/event2`，**不用 `EVIOCGRAB`**——不抢设备，原生音量调节完全不受影响 |
+| 组合窗口 | 两键落下间隔需 < 500 ms（`COMBO_WINDOW_MS`），防止"先按住一个再按另一个"误触发 |
+| 去抖 | 两键都松开后才重新武装，长按不连发 |
+| 注入方式 | 走 `/dev/uinput` 虚拟键盘，不依赖 `input` 命令 |
+| 热插拔 | 设备丢失自动重连，不退出 |
+
+**为什么注入 ESCAPE 而不是 BACK（一个隐蔽的坑）**
+
+最初版本注入 `KEYCODE_BACK`，在多数应用里等效"返回"，但**在 RetroArch 里完全无效**：
+
+- RetroArch 的 Android 键映射表 `rarch_key_map_android`（`input/input_keymaps.c:1553`）
+  **没有 `AKEYCODE_BACK`** 这一项，BACK 永远翻不出 `RETROK_*`，碰不到
+  `retroarch.cfg:254` 的 `input_exit_emulator = "escape"` 绑定。
+- 更隐蔽的是 `android_input.c` 里的 alias 逻辑：对非 gamepad 来源，BACK 会被**顺带**
+  置成 `AKEYCODE_X`——它在 RetroArch 里其实变成了**RetroPad 的 A 键**，不是"没反应"。
+- 反观 ESC：`Generic.kl:23 key 1 ESCAPE` → `AKEYCODE_ESCAPE(111)` →
+  `input_keymaps.c:1560 { AKEYCODE_ESCAPE, RETROK_ESCAPE }` → 命中 exit 绑定，能退游戏。
+
+ESC 在绝大多数场景与 BACK 通用，且是 RetroArch 唯一认的退出键，故统一注入 ESC。
+
+---
+
+## 存储布局：App 装哪里
+
+eMMC 只有 4 GB（`004GE0`，7733248 扇区 ≈ 3.69 GiB），必须精打细算。
+出厂分区把大量空间浪费在几乎用不到的 `backup`/`cache` 上，本固件重新分配了这些空间：
+
+| 分区 | 出厂 | 本固件 | 说明 |
+|---|---|---|---|
+| `backup` | 384 MiB | **8 MiB** | fstab 未引用，纯浪费 |
+| `cache` | 384 MiB | **16 MiB** | Android 11 已基本不用 cache 分区 |
+| `super` | 1532 MiB | **1344 MiB** | 动态分区（system/system_ext/vendor/product/odm） |
+| **`userdata`** | **1294 MiB** | **2249 MiB** | **= `/data`，App 装这里，+955 MiB** |
+| `recovery` | 76 MiB | 76 MiB | 起点 LBA 与出厂**完全相同**，刻意锁死保证救援通道 |
+
+**给你的使用建议：**
+
+> **App 装 eMMC，ROM 放 TF 卡。**
+
+- 应用安装包会落到 `/data/app`（即 `userdata` 分区，本固件已扩到 2249 MiB），
+  **不占 super**，所以装 App 不会把系统挤爆。
+- eMMC 的 4K 随机 IO 远快于 TF，App 冷启动、dex 加载、数据库读写都受益。
+- ROM（动辄几十上百 MB 的大文件）是顺序读，放 TF 卡毫无压力，且**换游戏库不用动系统**——
+  拔卡在电脑上拷即可。
+- `super` 里 5 个分区运行时全是只读挂载，只有重新 `lpmake` 改固件才会变，不会越用越满。
+
+---
+
+## 备份原机固件与救砖
+
+### 为什么必须先备份
+
+本机 eMMC 上的 `uboot`/`trust`/`security` 三个分区是**原厂专属**，一旦写坏就只剩
+MaskRom 强刷（需要 Rockchip 官方工具与专用固件，普通用户很难拿到）。所以：
+
+> **刷机前先备份整盘，留一条"随时回原厂"的路。**
+
+### 备份方法（Android 可启动时）
+
+前提：`adb` 可用，设备已 root（本固件默认 userdebug，`adb root` 即可）。
+
+```bash
+adb root
+adb wait-for-device
+
+# 1. 整盘 dump (4GB, 走 USB 约几分钟, 必须先确认有足够磁盘空间)
+adb shell 'dd if=/dev/block/mmcblk2 bs=4M' > RMX35K_factory_full.img
+
+# 2. 核对大小 (应为 3,959,422,976 字节 = 7733248 扇区 × 512)
+ls -l RMX35K_factory_full.img
+
+# 3. 计算并记录 md5 (校验用, 务必保存)
+md5sum RMX35K_factory_full.img > RMX35K_factory_full.md5
+```
+
+**注意：**
+
+- 必须写整盘 `/dev/block/mmcblk2`（含 GPT），不要只 dump 单分区——
+  单分区丢了 GPT 布局就回不去了。
+- 本机 eMMC 是 7733248 扇区（3.69 GiB），写出来的镜像就是这么大，别怀疑。
+- 备份**含 userdata（用户数据快照）**。若想"干净回原厂"，恢复时只刷静态分区即可，
+  `/data` 交给系统首次启动重建。
+
+**逐分区备份（可选，更省空间）：**
+
+```bash
+# 列出分区名
+adb shell 'ls /dev/block/by-name/'
+# 按需 dump, 例:
+adb shell 'dd if=/dev/block/by-name/super bs=4M' > super_factory.img
+adb shell 'dd if=/dev/block/by-name/boot  bs=4M' > boot_factory.img
+```
+
+### 备份文件清单（我们已留存）
+
+| 文件 | 大小 | md5 | 内容 |
+|---|---|---|---|
+| `mmcblk2_full.img` | 3,959,422,976 B | `ed364c9dae3585fa1d2dea6608e6bb1b` | 原厂整盘（含音量键+指示灯修复） |
+| `gpt_head_40sectors.bin` | 20480 B | — | GPT 头 LBA0-39 |
+| `partitions_byname.txt` | — | — | 分区表快照 |
+| `MD5SUMS.txt` | — | — | 全部文件校验和 |
+
+（位于 NFS `RMX35K_整机备份_20260924/`，含 `fixes/` 子目录的音量键/指示灯补丁资产）
+
+---
+
+### 救砖：TF 卡启动 AURKNIX 恢复固件
+
+**适用场景**：Android 起不来了、adb 连不上、卡 logo、刷坏 super/boot。
+**原理**：本机的 `security`/`uboot`/`trust` 分区从未被改写，所以芯片级引导永远活着，
+**硬件不会砖**。TF 卡上的 AURKNIX 有自己的引导，可以直接从 TF 启动一个 Linux，
+从系统内部把 eMMC 整盘写回。
+
+#### 第 0 步：准备恢复镜像
+
+把备份的整盘镜像（`mmcblk2_full.img` 或你自己的 `RMX35K_factory_full.img`）
+复制到 TF 卡的 **STORAGE 分区**根目录。AURKNIX 的 TF 卡有多个分区，STORAGE 是数据分区。
+
+若没有现成 TF 卡，用 `install_to_tf.sh` 制作：
+
+```bash
+# 在 Linux PC 上 (需要一张 >= 64G 的 TF 卡, 因为要装 4G 恢复镜像)
+sudo ./install_to_tf.sh /dev/sdX --flash      # 先写 AURKNIX, 再注入恢复包
+# 或卡上已有 AURKNIX 时:
+sudo ./install_to_tf.sh /dev/sdX              # 只注入恢复包
+```
+
+#### 第 1 步：改写启动脚本（核心）
+
+AURKNIX 从 TF 启动后会执行 `/storage/.config/autostart/` 下的所有脚本。
+**这就是改写点**——放一个恢复脚本进去，开机就自动刷写 eMMC：
+
+```bash
+# 在 PC 上, TF 卡的 STORAGE 分区挂载为 /media/user/STORAGE (路径按实际调整)
+mount /dev/sdX3 /mnt/tf        # STORAGE 分区序号视分区表而定
+cat > /mnt/tf/.config/autostart/00-emmc-restore.sh <<'EOS'
+#!/bin/bash
+#  RMX35K eMMC 整盘恢复 — 由 AURKNIX autostart 调用
+#  日志: /storage/emmc_restore.log
+#  成功: /storage/EMMC_RESTORE_DONE   失败: /storage/EMMC_RESTORE_FAILED
+LOG=/storage/emmc_restore.log
+exec >>"$LOG" 2>&1
+echo "===== $(date) eMMC restore start ====="
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin:$PATH
+
+S=/storage
+IMG=$S/emmc_restore.img
+DONE=$S/EMMC_RESTORE_DONE
+FAIL=$S/EMMC_RESTORE_FAILED
+EXPECT_SIZE=3959422976
+# ★ 改成你自己的镜像 md5
+EXPECT_MD5=ed364c9dae3585fa1d2dea6608e6bb1b
+
+rm -f "$FAIL"
+[ -f "$DONE" ] && { echo "already done"; exit 0; }
+[ -f "$IMG" ] || { echo "FATAL: no $IMG"; touch "$FAIL"; exit 0; }
+
+# 1. 定位 eMMC (按 7733248 扇区识别, 避免写错设备)
+EMMC=""; TF=""
+for B in /sys/block/mmcblk*; do
+  N=$(basename "$B")
+  case "$N" in *boot*|*rpmb*) continue;; esac
+  SZ=$(cat "$B/size" 2>/dev/null)
+  [ "$SZ" = "7733248" ] && EMMC=/dev/$N || { [ -z "$TF" ] && TF=/dev/$N; }
+done
+[ -z "$EMMC" ] && { echo "FATAL: eMMC not found"; touch "$FAIL"; exit 0; }
+[ "$EMMC" = "$TF" ] && { echo "FATAL: eMMC==TF"; touch "$FAIL"; exit 0; }
+echo "eMMC=$EMMC"
+
+# 2. 卸载 eMMC 上所有挂载
+for P in ${EMMC}p*; do [ -b "$P" ] && umount -f "$P" 2>/dev/null; done
+sync
+
+# 3. 校验镜像 md5
+echo "verifying image md5..."
+MD=$(md5sum "$IMG" | awk '{print $1}')
+[ "$MD" = "$EXPECT_MD5" ] || { echo "FATAL: md5 mismatch $MD"; touch "$FAIL"; exit 0; }
+
+# 4. 整盘写回 (4M 块, 直写 + fsync)
+echo "writing $IMG -> $EMMC ..."
+dd if="$IMG" of="$EMMC" bs=4M conv=fsync status=progress || { touch "$FAIL"; exit 0; }
+sync
+
+# 5. 回读校验 (抽样 1MB)
+echo "verifying written data..."
+dd if="$EMMC" bs=1M count=1 | md5sum > /tmp/r1
+dd if="$IMG"  bs=1M count=1 | md5sum > /tmp/r2
+diff -q /tmp/r1 /tmp/r2 >/dev/null || { echo "FATAL: readback mismatch"; touch "$FAIL"; exit 0; }
+
+echo "RESTORE OK"
+touch "$DONE"
+sync
+poweroff
+EOS
+chmod +x /mnt/tf/.config/autostart/00-emmc-restore.sh
+umount /mnt/tf
+```
+
+**要点：**
+
+- `EXPECT_MD5` **必须改成你自己的镜像 md5**，否则脚本会因校验不符拒刷。
+- 脚本按 `7733248` 扇区识别 eMMC，**防止认错设备写成 TF 卡自己**（TF 是另一块盘）。
+- 写完自动 `poweroff`，并留下 `EMMC_RESTORE_DONE`/`EMMC_RESTORE_FAILED` 标记文件。
+- 抢救旧数据：如需先备份 `/data`，参考现成的 `00-emmc-install-fix11.sh`
+  （内含"尽力抢救旧 userdata 日志"段落），把恢复顺序改成先备份再写。
+
+#### 第 2 步：执行恢复
+
+1. TF 卡插入设备
+2. 开机 → AURKNIX 从 TF 启动 → autostart 自动执行恢复脚本
+3. 等待刷写（4 GB 整盘，视 TF 速度约 10-20 分钟）
+4. 自动关机
+5. **拔掉 TF 卡**，重新开机 → 原厂固件回来了
+
+**进度查看**（若恢复中途想确认状态）：把 TF 拔出来插电脑，看
+`/storage/emmc_restore.log` 与 `EMMC_RESTORE_DONE`/`EMMC_RESTORE_FAILED` 标记。
+
+#### 第 3 步：验证
+
+拔卡开机后：
+
+```bash
+adb root
+adb shell getprop sys.boot_completed        # 应为 1
+# 核对系统分区 md5 与备份一致
+adb shell 'dd if=/dev/block/by-name/super bs=4M | md5sum'
+```
+
+### 三条恢复通道优先级
+
+| 优先级 | 通道 | 前提 |
+|---|---|---|
+| 1 | `adb reboot recovery` → recovery 里 `dd` | adb 可用（最方便） |
+| 2 | `fastboot flash super ...` | 能进 fastbootd/bootloader |
+| 3 | **TF 卡 AURKNIX 启动 + autostart 恢复脚本** | **adb/fastboot 全挂时的最后手段** |
+| 4 | MaskRom 强刷（Rockchip 官方工具） | 彻底没救时的最后兜底 |
+
+> **硬件不会砖**——`security`/`uboot`/`trust` 在独立分区且从未改写，芯片级引导永远活着。
 
 ---
 
