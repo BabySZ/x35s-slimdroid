@@ -1,0 +1,5 @@
+service vendor.power-aidl-rm35k /vendor/bin/hw/android.hardware.power-service.rm35k
+    class hal
+    user root
+    group system
+    capabilities DAC_OVERRIDE

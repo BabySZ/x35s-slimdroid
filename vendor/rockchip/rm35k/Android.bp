@@ -1,0 +1,46 @@
+// RMX35K vendor prebuilt 闭源库声明
+//
+// ============================================================================
+// ⚠️ 这些 prebuilt 已改为经 device/rockchip/rm35k/common.mk 的
+//    PRODUCT_COPY_FILES 直接安装, 本文件**不再**用 cc_prebuilt_library_shared
+//    声明它们, 原因:
+//
+//      "卡第二屏重启" 根因 = 缺少 /vendor/lib64/hw/hwcomposer.rk30board.so。
+//      hwcomposer.rk30board 虽写在 PRODUCT_PACKAGES 里, 但**没有模块定义**
+//      (唯一规则在 hardware/rockchip/hwcomposer/einkhwc/Android.mk, 被
+//       ifeq ($(BUILD_WITH_RK_EBOOK),true) 包住, 全树只有 pinenote 设了它),
+//      构建系统对未定义的 PRODUCT_PACKAGES 条目**不报错**, 于是静默缺失。
+//
+//    为什么不用 cc_prebuilt_library_shared 补声明:
+//      * libhwjpeg: hardware/rockchip/libhwjpeg/Android.bp 已有源码模块,
+//        两个模块争同一个 out/.../vendor/lib64/libhwjpeg.so, kati 直接报
+//            error: overriding commands for target '.../libhwjpeg.so'
+//        (已实测, 构建中断)。
+//      * libstagefrighthw: hardware/qcom/sdm845/media/libstagefrighthw 同名。
+//      用 PRODUCT_COPY_FILES 直接拷文件可完全绕开模块名/输出路径冲突,
+//      也正是本树既有 vendor blob 的安装方式 (见 device-vendor.mk)。
+//
+//    产物文件名与调用方 dlopen 的名字一致 (libhwjpeg.so / libstagefrighthw.so)。
+// ============================================================================
+
+cc_prebuilt_library_shared {
+    name: "libbaseparameter",
+    vendor: true,
+    stem: "libbaseparameter",
+    compile_multilib: "both",
+    multilib: {
+        lib32: { srcs: ["lib/libbaseparameter.so"] },
+        lib64: { srcs: ["lib64/libbaseparameter.so"] },
+    },
+}
+
+cc_prebuilt_library_shared {
+    name: "libteec",
+    vendor: true,
+    stem: "libteec",
+    compile_multilib: "both",
+    multilib: {
+        lib32: { srcs: ["lib/libteec.so"] },
+        lib64: { srcs: ["lib64/libteec.so"] },
+    },
+}

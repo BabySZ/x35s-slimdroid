@@ -1,0 +1,51 @@
+# zedkeys — 无 Back 键掌机的「退出游戏」组合键守护进程
+#
+# 起因: VOL+ 与 VOL- 同时按下应注入 KEYCODE_BACK, 否则没有返回键的掌机无法退出游戏。
+#       该守护进程/rc 一直都在镜像里, 但因为**缺少本文件描述的 SELinux 域转换**,
+#       init 拒绝启动它 (init.svc.zedkeys 不存在, 进程从未运行)。
+#
+# 证据 (实机 dmesg):
+#   init: Control message: Could not ctl.start for 'zedkeys' ...:
+#   File /vendor/bin/zedkeys(labeled "u:object_r:vendor_file:s0") has incorrect label
+#   or no domain transition from u:r:init:s0 to another SELinux domain defined.
+#
+# 报错判据源码: system/core/init/service.cpp:82-90
+#   rc = security_compute_create(mycon, filecon, process, &new_con);
+#   if (rc == 0 && computed_context == mycon.get())  -> 报错
+#   即: 内核返回的"新域"与 init 自身域**相同** = 不存在域转换。
+#   注意这是**静态策略查询**, 与 getenforce 无关 —— 所以即便设备处于
+#   Permissive (enforce=0) 依然被拒 (已实测: getenforce=Permissive 仍失败)。
+#
+# 修法: 套用与 akmd/abc 相同的 vendor daemon 模板。
+#   file.te        : 声明 zedkeys / zedkeys_exec 两个类型
+#   file_contexts  : 把 /vendor/bin/zedkeys 标成 zedkeys_exec
+#                  (不标的话它仍是 vendor_file, 转换目标就对不上)
+#   init_daemon_domain(zedkeys) -> domain_auto_trans(init, zedkeys_exec, zedkeys)
+#                  这是让 init 从 u:r:init:s0 切到 u:r:zedkeys:s0 的那一步
+
+type zedkeys, domain;
+type zedkeys_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(zedkeys)
+
+# ---- 被动监听音量键: 读 /dev/input/event2 ----
+# zedkeys.c:143  open("/dev/input/event2", O_RDONLY) + read()
+# /dev/input/event2 的标签是 input_device
+# (证据: 实机 `ls -laZ /dev/input/event2` -> u:object_r:input_device:s0)
+# 参考已有写法: sepolicy/vendor/hal_sensors_default.te:2-3
+allow zedkeys input_device:dir { search open read };
+allow zedkeys input_device:chr_file { open read ioctl getattr };
+
+# ---- 注入按键: 写 /dev/uinput ----
+# zedkeys.c:62-84  open("/dev/uinput", O_WRONLY|O_NONBLOCK) + ioctl(UI_DEV_SETUP/UI_DEV_CREATE)
+#                  + write() 注入 input_event
+# /dev/uinput 的标签是 uhid_device
+# (证据: 实机 `ls -laZ /dev/uinput` -> u:object_r:uhid_device:s0;
+#        system/sepolicy/private/file_contexts:172 定义)
+# 参考已有写法: system/sepolicy/private/shell.te:4 rw_file_perms
+allow zedkeys uhid_device:chr_file rw_file_perms;
+
+# ---- 日志 ----
+# zedkeys.c:41-47 logmsg() 用 vfprintf(stderr, ...), 不是 /dev/kmsg。
+# stderr 由 init 接管并转发到 logd/kmsg, 无需额外 allow。
+# (曾误写 allow ... kmsg_device, 核对源码后删除 —— 不加不需要的权限。)

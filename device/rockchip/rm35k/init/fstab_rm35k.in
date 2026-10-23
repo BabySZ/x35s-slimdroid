@@ -1,0 +1,16 @@
+# Android fstab for RMX35K (rk3566_rm700k) — 从设备官方 fstab.rk30board 移植
+#<src>                          <mnt_point>   <type> <mnt_flags>                          <fs_mgr_flags>
+${_block_prefix}system     /system      ext4 ro,barrier=1 ${_flags_vbmeta},first_stage_mount${_flags_avbpubkey}
+${_block_prefix}vendor     /vendor      ext4 ro,barrier=1 ${_flags},first_stage_mount
+${_block_prefix}odm        /odm         ext4 ro,barrier=1 ${_flags},first_stage_mount
+${_block_prefix}product    /product     ext4 ro,barrier=1 ${_flags},first_stage_mount
+${_block_prefix}system_ext /system_ext  ext4 ro,barrier=1 ${_flags},first_stage_mount
+/dev/block/by-name/metadata /metadata   ext4 nodev,noatime,nosuid,discard,sync wait,formattable,first_stage_mount,check
+/dev/block/by-name/misc     /misc       emmc defaults defaults
+/dev/block/by-name/cache    /cache      ext4 noatime,nodiratime,nosuid,nodev,noauto_da_alloc,discard wait,check
+
+/devices/platform/*usb*      auto vfat defaults voldmanaged=usb:auto
+/devices/platform/*.sata*    auto vfat defaults voldmanaged=sata:auto
+/devices/platform/*.pcie*    auto vfat defaults voldmanaged=pcie:auto
+# RMX35K 无 SD 卡槽 (掌机内置 eMMC)
+/dev/block/by-name/userdata  /data ext4 noatime,nosuid,nodev,discard,reserve_root=32768,resgid=1065 latemount,wait,check,quota,formattable,reservedsize=128M

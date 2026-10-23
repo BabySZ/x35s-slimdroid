@@ -1,0 +1,13 @@
+cc_binary {
+    name: "zedkeys",
+    srcs: ["zedkeys.c"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+    ],
+    shared_libs: [],
+    static_libs: [],
+    init_rc: ["zedkeys.rc"],
+    vendor: true,
+}
